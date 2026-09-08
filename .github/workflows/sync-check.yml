@@ -1,0 +1,14 @@
+name: sync-check
+
+on:
+  schedule:
+    - cron: 0 8 * * 1
+  workflow_dispatch:
+
+jobs:
+  upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Check whether skills/ is behind upstream
+        run: ./scripts/sync-upstream.sh --check
