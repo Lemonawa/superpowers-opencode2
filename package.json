@@ -6,7 +6,7 @@
   "main": "./src/v1-compat.js",
   "exports": {
     ".": "./src/index.ts",
-    "./server": "./src/v1-compat.js",
+    "./server": "./src/index.ts",
     "./package.json": "./package.json"
   },
   "files": [

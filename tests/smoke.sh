@@ -32,8 +32,9 @@ echo "  [PASS] v2 entry uses Plugin.define + prompt/context hooks + skill.transf
 
 echo "== v1 entry =="
 grep -q '"\./server"' "$ROOT/package.json" || { echo "  [FAIL] package.json missing ./server export"; exit 1; }
+node -e "const p=require('$ROOT/package.json'); if (p.exports['./server'] !== p.exports['.']) { console.error('  [FAIL] ./server and . must point at the same dual entrypoint'); process.exit(1) }"
 grep -q 'SuperpowersPlugin' "$ROOT/src/v1-compat.js" || { echo "  [FAIL] v1-compat.js missing SuperpowersPlugin"; exit 1; }
-echo "  [PASS] package exposes ./server and v1-compat.js keeps the upstream plugin"
+echo "  [PASS] package exposes ./server on the dual entrypoint; v1-compat.js keeps the upstream plugin"
 
 echo ""
 echo "All smoke tests passed"

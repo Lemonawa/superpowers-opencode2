@@ -52,9 +52,11 @@ The model should announce it is using superpowers and follow the
 }
 ```
 
-V1 resolves package `main`/`exports["./server"]` (`src/v1-compat.js`), which is
-upstream's V1 plugin with the skills path pointed at this package's `skills/`.
-Works on OpenCode V1 1.18.x (tested on 1.18.30); it has no runtime dependencies.
+V1 resolves package `exports["./server"]` (falling back to `main`) to the same
+dual entrypoint and calls its `server()`, which wraps upstream's V1 plugin with
+the skills path pointed at this package's `skills/`. Works on OpenCode V1
+1.18.x (tested on 1.18.30). `main` still points at the dependency-free
+`src/v1-compat.js` for older loaders.
 
 ## Usage
 

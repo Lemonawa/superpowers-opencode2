@@ -198,6 +198,15 @@ await check("buildBootstrap returns null without using-superpowers", () => {
 });
 
 // --- V1 surface (src/v1-compat.js through the same default export) ---
+await check("./server export resolves to the same dual module as `.`", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  assert.equal(
+    pkg.exports["./server"],
+    pkg.exports["."],
+    "opencode v2 resolves ./server before `.`; both must expose id+setup",
+  );
+});
+
 await check("default export exposes a V1 server()", () => {
   assert.equal(typeof plugin.default.server, "function", "server is a function");
 });
