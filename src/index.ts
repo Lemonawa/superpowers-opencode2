@@ -4,15 +4,18 @@
  * - Registers the bundled `skills/` directory via `ctx.skill.transform`.
  * - Injects the using-superpowers bootstrap into the first prompt of each
  *   session via `ctx.session.hook("prompt", ...)`.
- *
- * V1 clients keep working through `src/v1-compat.js` (package `main`);
- * V2 resolves this file through the `exports` map.
+ * - Re-injects it through `ctx.session.hook("context", ...)` when compaction
+ *   has dropped it from the model context.
+ * - Exposes the V1 implementation as `server()` so V1 clients keep working
+ *   from the same package (`main`/`exports["./server"]` point at
+ *   `src/v1-compat.js`, which upstream's V1 loader understands).
  */
 
-import { Plugin, Skill } from "@opencode-ai/plugin";
+import { Plugin, type Skill } from "@opencode/plugin";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SuperpowersPlugin } from "./v1-compat.js";
 
 const skillsDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -29,21 +32,29 @@ interface SkillDef {
   content: string;
 }
 
+function unquote(value: string): string {
+  if (value.length < 2) return value;
+  const first = value[0];
+  const last = value[value.length - 1];
+  if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
 /** Split `---` YAML frontmatter from a SKILL.md body (no dependencies). */
-function splitFrontmatter(raw: string): { data: Record<string, string>; body: string } {
-  const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-  if (!match) return { data: {}, body: raw };
+export function splitFrontmatter(raw: string): { data: Record<string, string>; body: string } {
+  const text = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  const match = text.match(/^---\n([\s\S]*?)\n---(?:\n([\s\S]*))?$/);
+  if (!match) return { data: {}, body: text };
   const data: Record<string, string> = {};
   for (const line of match[1].split("\n")) {
     const idx = line.indexOf(":");
     if (idx > 0) {
-      data[line.slice(0, idx).trim()] = line
-        .slice(idx + 1)
-        .trim()
-        .replace(/^["']|["']$/g, "");
+      data[line.slice(0, idx).trim()] = unquote(line.slice(idx + 1).trim());
     }
   }
-  return { data, body: match[2] };
+  return { data, body: match[2] ?? "" };
 }
 
 /** Read every `skills/<id>/SKILL.md` into registration entries. */
@@ -94,37 +105,104 @@ ${TOOL_MAPPING}
 </${BOOTSTRAP_MARKER}>`;
 }
 
-export default Plugin.define({
-  id: "superpowers",
-  async setup(ctx) {
-    const skills = loadSkills(skillsDir);
-    const bootstrap = buildBootstrap(skills);
+/**
+ * True when any stored history entry or assembled model message carries the
+ * bootstrap. `event.messages` are `@opencode/ai` messages (`content` parts);
+ * `ctx.session.context()` returns persisted `SessionMessageInfo` records
+ * (`text` on user/synthetic/system/skill entries, `content` on assistants).
+ */
+function carriesBootstrap(messages: unknown): boolean {
+  if (!Array.isArray(messages)) return false;
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    const record = message as Record<string, unknown>;
+    if (typeof record.text === "string" && record.text.includes(BOOTSTRAP_MARKER)) return true;
+    if (!Array.isArray(record.content)) continue;
+    for (const part of record.content) {
+      if (!part || typeof part !== "object") continue;
+      const text = (part as Record<string, unknown>).text;
+      if (typeof text === "string" && text.includes(BOOTSTRAP_MARKER)) return true;
+    }
+  }
+  return false;
+}
 
-    await ctx.skill.transform((editor) => {
-      for (const s of skills) {
-        editor.add({
-          id: s.id as Skill.Info["id"],
-          name: s.name as Skill.Info["name"],
-          description: s.description,
-          location: s.location as Skill.Info["location"],
-          content: s.content,
-        });
-      }
-    });
+interface PromptWithMentions {
+  files?: unknown;
+  agents?: unknown;
+  skills?: unknown;
+}
 
-    // Prepend the bootstrap to the first admitted prompt of each session.
-    // The hook runs once per admission (not per model call), so unlike the
-    // V1 message transform this needs no re-injection and no per-step cost.
-    const injected = new Set<string>();
-    await ctx.session.hook("prompt", (event) => {
-      if (!bootstrap) return;
-      const sessionID = event.sessionID as string;
-      if (injected.has(sessionID)) return;
-      if (injected.size > 5000) injected.clear();
-      injected.add(sessionID);
-      const text = event.prompt.text ?? "";
-      if (text.includes(BOOTSTRAP_MARKER)) return;
-      event.prompt.text = `${bootstrap}\n\n${text}`;
-    });
-  },
-});
+/** Keep `@file`/`@agent`/skill mention offsets aligned after prepending text. */
+function shiftMentions(prompt: PromptWithMentions, delta: number): void {
+  for (const list of [prompt.files, prompt.agents, prompt.skills]) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue;
+      const mention = (item as { mention?: { start?: unknown; end?: unknown } }).mention;
+      if (!mention || typeof mention.start !== "number" || typeof mention.end !== "number") continue;
+      mention.start += delta;
+      mention.end += delta;
+    }
+  }
+}
+
+export default {
+  ...Plugin.define({
+    id: "superpowers",
+    async setup(ctx) {
+      const skills = loadSkills(skillsDir);
+      const bootstrap = buildBootstrap(skills);
+
+      await ctx.skill.transform((editor) => {
+        for (const s of skills) {
+          editor.add({
+            id: s.id as Skill.Info["id"],
+            name: s.name as Skill.Info["name"],
+            description: s.description,
+            location: s.location as Skill.Info["location"],
+            content: s.content,
+          });
+        }
+      });
+
+      // Prepend the bootstrap to the first admitted prompt of each session.
+      // The hook runs once per admission (not per model call). The in-memory
+      // set is only a fast path: when it misses (server restart, eviction),
+      // the marker check against stored history prevents double injection.
+      const injected = new Set<string>();
+      await ctx.session.hook("prompt", async (event) => {
+        if (!bootstrap) return;
+        const sessionID = String(event.sessionID);
+        if (injected.has(sessionID)) return;
+        if (injected.size > 5000) injected.clear();
+        injected.add(sessionID);
+
+        const text = event.prompt.text ?? "";
+        if (text.includes(BOOTSTRAP_MARKER)) return;
+        try {
+          const history = await ctx.session.context({ sessionID: event.sessionID });
+          if (carriesBootstrap(history)) return;
+        } catch {
+          // Fresh sessions have no stored history yet; inject below.
+        }
+
+        const prefix = `${bootstrap}\n\n`;
+        event.prompt.text = prefix + text;
+        shiftMentions(event.prompt, prefix.length);
+      });
+
+      // Compaction replaces older context with a checkpoint, dropping the
+      // bootstrap with it. Re-add it to the system prompt whenever a model
+      // request would otherwise run without it (request-scoped, not persisted).
+      await ctx.session.hook("context", (event) => {
+        if (!bootstrap) return;
+        if (carriesBootstrap(event.messages)) return;
+        if (event.system.some((part) => part.text.includes(BOOTSTRAP_MARKER))) return;
+        event.system.push({ type: "text", text: bootstrap });
+      });
+    },
+  }),
+  // V1 clients resolve this through `main`/`exports["./server"]`.
+  server: SuperpowersPlugin,
+};

@@ -54,7 +54,10 @@ let _bootstrapCache = undefined; // undefined = not yet loaded, null = file miss
 
 export const SuperpowersPlugin = async ({ client, directory }) => {
   const homeDir = os.homedir();
-  const superpowersSkillsDir = path.resolve(__dirname, '../../skills');
+  // Upstream ships this file in `.opencode/plugins/`, where `../../skills`
+  // reaches the repo root. Here the wrapper lives in `src/`, so the vendored
+  // skills are one directory closer.
+  const superpowersSkillsDir = path.resolve(__dirname, '../skills');
   const envConfigDir = normalizePath(process.env.OPENCODE_CONFIG_DIR, homeDir);
   const configDir = envConfigDir || path.join(homeDir, '.config/opencode');
 

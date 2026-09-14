@@ -7,20 +7,23 @@
 
 Upstream superpowers ships a V1-only plugin (`.opencode/plugins/superpowers.js`).
 This repo wraps the same skills in the V2 plugin API so they install and run on
-`opencode2`, while keeping the V1 entry working from the same package.
+OpenCode v2, while keeping V1 support through the same package.
 
 - **V2**: registers all bundled skills via `ctx.skill.transform`, injects the
   `using-superpowers` bootstrap into each session's first prompt via
-  `ctx.session.hook("prompt", ...)` — once per session, never re-injected.
-- **V1**: ships upstream's plugin unchanged as `src/v1-compat.js` (package
-  `main`), zero dependencies.
+  `ctx.session.hook("prompt", ...)`, and re-adds it on model requests through
+  `ctx.session.hook("context", ...)` once compaction drops it. The prompt hook
+  shifts file/agent/skill mention offsets, and a marker check against stored
+  history stops double injection after a restart.
+- **V1**: loads upstream's plugin (via package `main` / `exports["./server"]`)
+  with one path fix for this package layout; it has no dependencies.
 - **Skills**: synced verbatim from upstream; only the wrapper is V2-specific.
   Current upstream commit: see `skills/.upstream-commit`.
 
-## Install on OpenCode V2
+## Install on OpenCode v2
 
 ```sh
-opencode2 plugin add github:Lemonawa/superpowers-opencode2
+opencode plugin add github:Lemonawa/superpowers-opencode2
 ```
 
 Or declare it in config:
@@ -32,7 +35,7 @@ Or declare it in config:
 }
 ```
 
-Restart OpenCode, then verify:
+Requires OpenCode v2 (tested on v2.0.3). Restart OpenCode, then verify:
 
 > Tell me about your superpowers
 
@@ -49,8 +52,9 @@ The model should announce it is using superpowers and follow the
 }
 ```
 
-This resolves the package `main` (`src/v1-compat.js`), byte-identical to
-upstream's V1 plugin. Requires OpenCode V1 >= 1.18 (function-export form).
+V1 resolves package `main`/`exports["./server"]` (`src/v1-compat.js`), which is
+upstream's V1 plugin with the skills path pointed at this package's `skills/`.
+Works on OpenCode V1 1.18.x (tested on 1.18.30); it has no runtime dependencies.
 
 ## Usage
 
@@ -89,14 +93,23 @@ Skills speak in actions; on OpenCode these resolve to:
    content }`. `location` points at the real `SKILL.md` so supporting files
    (scripts, references) resolve next to it.
 2. A **prompt hook** prepends the bootstrap (full `using-superpowers` body +
-   the tool mapping above) to the first admitted prompt of each session. The
-   hook runs once per admission, so unlike V1's message transform there is no
-   per-step cost and no re-injection. A per-session set plus a marker guard
-   make double injection impossible (retries return the original admission
-   without rerunning hooks).
-3. `using-superpowers` is registered as a skill too (same as V1, where the
+   the tool mapping above) to the first admitted prompt of each session and
+   shifts the `mention` offsets of attached files/agents/skills so they still
+   point at the same text. The hook runs once per admission. Its in-memory
+   session set is only a fast path: on a miss (server restart, eviction) it
+   checks stored history for the marker, so nothing is injected twice and
+   nothing is injected on top of an existing bootstrap.
+3. A **context hook** re-adds the bootstrap to the request's system prompt
+   whenever a model request would run without it. Compaction replaces older
+   context with a checkpoint, so this keeps long sessions covered without
+   persisting a second copy. (The V1 entry uses upstream's per-step message
+   transform instead.)
+4. `using-superpowers` is registered as a skill too (same as V1, where the
    whole directory was discoverable); the bootstrap text tells the model it is
    already loaded and must not be loaded again.
+
+Both entries live in the same default export: V2 reads `id`/`setup`, V1 reads
+`server()` (upstream's plugin).
 
 ## Keeping skills updated
 
@@ -115,7 +128,7 @@ push.
 ## Development
 
 ```sh
-npm install        # installs @opencode-ai/plugin@beta (pinned to opencode2's beta)
+npm install        # installs @opencode/plugin (same major as the opencode v2 release)
 npm run typecheck  # tsc --noEmit, strict
 npm test           # smoke.sh (syntax, frontmatter, entry shape) + mock-context test
 ```
@@ -123,40 +136,44 @@ npm test           # smoke.sh (syntax, frontmatter, entry shape) + mock-context 
 Layout:
 
 ```text
-src/index.ts        V2 plugin (Plugin.define)
-src/v1-compat.js    V1 plugin, verbatim upstream
+src/index.ts        V2 plugin (Plugin.define) + V1 server() export
+src/v1-compat.js    upstream's V1 plugin, one-line skills path fix
 skills/             vendored upstream skills + .upstream-commit
 scripts/sync-upstream.sh
 tests/smoke.sh tests/plugin.mock.mjs
-.github/workflows/ ci.yml, sync-check.yml
+.github/workflows/  ci.yml, sync-check.yml
 ```
 
 ### Verified against
 
-- `opencode2 v0.0.0-beta-19242`, `@opencode-ai/plugin@beta` (same build)
-- Live-server test: plugin loads with no errors, 14/14 skills register,
-  prompt hook injects the bootstrap (marker-verified) before model dispatch.
+- `opencode v2.0.3`, `@opencode/plugin@2.0.3`: plugin loads with no errors,
+  14/14 skills register, the prompt hook injects the bootstrap before
+  admission, mention offsets survive the prepend, and a server restart does
+  not re-inject into a session that already has it.
+- `opencode v1.18.30`: plugin loads through `main`/`exports["./server"]`,
+  registers the skills path, and the provider request carries the bootstrap.
+  Pinned in CI by `npm test` (no V1 binary is exercised there).
 
-## Known issues (opencode2 beta)
+### Local development
 
-Observed on `beta-19242`, all client-side beta gaps (not this plugin):
+Configured local plugin directories resolve a root `server`/`index` file, not
+the package `exports` map. To point a local OpenCode at this checkout, use a
+shim directory:
 
-1. Bare `.ts` files under `.opencode/plugins/` cannot `import
-   "@opencode-ai/plugin"` (`Cannot find package`). Package installs (with
-   `node_modules`) are unaffected — install via `plugin add`, not by copying
-   `src/index.ts` next to your config.
-2. Package directories placed manually under `.opencode/plugins/` are not
-   discovered in this beta. Again, `plugin add` is the supported path.
-3. `run --standalone` ignores `opencode.json(c)` (`plugins` entries included).
-   Prefer the managed background service for config-driven setups.
-4. `models --standalone` is rejected despite being listed in help.
+```ts
+// /tmp/local-superpowers/index.ts
+export { default } from "/path/to/superpowers-opencode2/src/index.ts";
+```
 
-If any of these persist on newer betas, they are worth reporting upstream
-(the plugin API itself works as documented).
+```jsonc
+{ "plugins": ["/tmp/local-superpowers"] }
+```
+
+Package installs (`plugin add`) use the package `exports` map and need no shim.
 
 ## Troubleshooting
 
-**Plugin not loading**: `opencode2 run --standalone --print-logs "hello" 2>&1 |
+**Plugin not loading**: `opencode run --standalone --print-logs "hello" 2>&1 |
 grep -i "loading plugin\|failed to load"`. A `failed to load plugin` line names
 the cause (usually dependency resolution when installed outside a package).
 
@@ -164,8 +181,9 @@ the cause (usually dependency resolution when installed outside a package).
 `description`; every bundled skill has one. Check for an ID clash with a
 project/personal skill, which wins by precedence.
 
-**Bootstrap missing**: it is prepended to the first admitted user prompt. If a
-session was created before the plugin was installed, start a new session.
+**Bootstrap missing**: it is prepended to the first admitted user prompt. A
+session that predates the plugin gets it in the system prompt on its next
+model request through the context hook.
 
 ## License
 

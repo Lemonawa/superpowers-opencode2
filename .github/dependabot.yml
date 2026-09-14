@@ -1,11 +1,9 @@
-# @opencode-ai/plugin must track the opencode2 server release (the `beta`
-# tag), not semver-latest: snapshot tags sort higher than the real beta and
-# break the build. Bump it manually alongside opencode2 upgrades.
+# @opencode/plugin tracks the OpenCode v2 server release (`latest`). Snapshot
+# builds live under the `dev`/`beta` dist-tags as prereleases, so Dependabot
+# only proposes stable 2.x bumps; CI typechecks and tests each one.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
-    ignore:
-      - dependency-name: "@opencode-ai/plugin"

@@ -5,7 +5,9 @@
   "type": "module",
   "main": "./src/v1-compat.js",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./server": "./src/v1-compat.js",
+    "./package.json": "./package.json"
   },
   "files": [
     "src/",
@@ -17,7 +19,7 @@
     "sync-upstream": "./scripts/sync-upstream.sh"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "beta"
+    "@opencode/plugin": "^2.0.3"
   },
   "devDependencies": {
     "@types/node": "^26.5.0",
