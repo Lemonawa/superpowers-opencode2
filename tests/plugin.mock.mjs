@@ -1,7 +1,8 @@
-// Mock-context tests for the V2 plugin entry (src/index.ts) and the V1 surface.
+// Mock-context tests for the V2 plugin entry (src/index.ts).
 // Run: node tests/plugin.mock.mjs
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -71,6 +72,17 @@ await check("skills registered == skills on disk", () => {
   assert.ok(added.some((s) => s.id === "using-superpowers"), "using-superpowers registered");
 });
 
+await check("skills without a description are skipped", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "superpowers-skills-"));
+  try {
+    fs.mkdirSync(path.join(dir, "nodesc"));
+    fs.writeFileSync(path.join(dir, "nodesc", "SKILL.md"), "---\nname: No Desc\n---\nBody");
+    assert.deepEqual(plugin.loadSkills(dir), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- prompt hook ---
 const run = async (sessionID, text, extra = {}) => {
   const event = { sessionID, messageID: "m1", prompt: { text, ...extra }, delivery: "steer" };
@@ -83,6 +95,28 @@ await check("prompt hook prepends bootstrap to first prompt", async () => {
   const event = await run("s1", "hello");
   assert.ok(event.prompt.text.includes("EXTREMELY_IMPORTANT"), "bootstrap prepended");
   assert.ok(event.prompt.text.endsWith("hello"), "original text preserved");
+});
+
+await check("bootstrap maps skill actions to v2 tool names", async () => {
+  const text = (await run("s-tools", "hello")).prompt.text;
+  for (const tool of [
+    "`patch`",
+    "`edit`",
+    "`write`",
+    "`shell`",
+    "`grep`",
+    "`glob`",
+    "`read`",
+    "`skill`",
+    "`subagent`",
+    "`webfetch`",
+  ]) {
+    assert.ok(text.includes(tool), `bootstrap maps to ${tool}`);
+  }
+  assert.ok(text.includes('`agent: "general"`'), "subagent mapping names the agent argument");
+  for (const stale of ["apply_patch", "todowrite", "subagent_type"]) {
+    assert.ok(!text.includes(stale), `bootstrap drops v1-only ${stale}`);
+  }
 });
 
 await check("prompt hook leaves later prompts in the same session untouched", async () => {
@@ -197,41 +231,12 @@ await check("buildBootstrap returns null without using-superpowers", () => {
   assert.equal(plugin.buildBootstrap([]), null);
 });
 
-// --- V1 surface (src/v1-compat.js through the same default export) ---
-await check("./server export resolves to the same dual module as `.`", () => {
-  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
-  assert.equal(
-    pkg.exports["./server"],
-    pkg.exports["."],
-    "opencode v2 resolves ./server before `.`; both must expose id+setup",
-  );
-});
-
-await check("default export exposes a V1 server()", () => {
-  assert.equal(typeof plugin.default.server, "function", "server is a function");
-});
-
-await check("V1 server() returns upstream hooks and registers an existing skills dir", async () => {
-  const v1 = await plugin.default.server({ client: {}, directory: ROOT });
-  assert.equal(typeof v1.config, "function", "config hook");
-  const config = {};
-  await v1.config(config);
-  assert.ok(Array.isArray(config.skills.paths), "skills.paths array");
-  assert.ok(
-    config.skills.paths.some((p) => fs.existsSync(path.join(p, "using-superpowers", "SKILL.md"))),
-    `registered skills dir exists: ${config.skills.paths.join(", ")}`,
-  );
-});
-
-await check("V1 message transform injects a real bootstrap", async () => {
-  const v1 = await plugin.default.server({ client: {}, directory: ROOT });
-  const output = {
-    messages: [{ info: { role: "user" }, parts: [{ type: "text", text: "hi" }] }],
-  };
-  await v1["experimental.chat.messages.transform"]({}, output);
-  const text = output.messages[0].parts[0].text;
-  assert.ok(text.includes("EXTREMELY_IMPORTANT"), "bootstrap present");
-  assert.ok(text.includes("You have superpowers."), "bootstrap body present");
+await check("buildBootstrap includes the tool mapping when using-superpowers exists", () => {
+  const built = plugin.buildBootstrap([
+    { id: "using-superpowers", name: "using-superpowers", description: "x", location: "/x", content: "body" },
+  ]);
+  assert.ok(built.includes("body"), "skill body included");
+  assert.ok(built.includes("Tool Mapping"), "tool mapping included");
 });
 
 console.log("");

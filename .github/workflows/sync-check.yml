@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: 0 8 * * 1
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "skills/**"
+      - "scripts/sync-upstream.sh"
+      - ".github/workflows/sync-check.yml"
 
 jobs:
   upstream:

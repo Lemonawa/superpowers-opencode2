@@ -1,21 +1,21 @@
 {
   "name": "superpowers-opencode2",
-  "version": "0.1.0",
-  "description": "Superpowers skills for OpenCode (V2 plugin API, V1 compatible)",
+  "version": "0.2.0",
+  "description": "Superpowers skills for OpenCode (v2 plugin API)",
   "type": "module",
-  "main": "./src/v1-compat.js",
   "exports": {
     ".": "./src/index.ts",
-    "./server": "./src/index.ts",
     "./package.json": "./package.json"
   },
   "files": [
     "src/",
-    "skills/"
+    "skills/",
+    "scripts/",
+    "tests/"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "./tests/smoke.sh && node tests/plugin.mock.mjs",
+    "test": "./tests/smoke.sh && node tests/pack-check.mjs && node tests/plugin.mock.mjs",
     "sync-upstream": "./scripts/sync-upstream.sh"
   },
   "dependencies": {
